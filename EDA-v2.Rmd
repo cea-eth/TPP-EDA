@@ -1,0 +1,805 @@
+---
+title: "R Notebook"
+output:
+  word_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+setwd("C:\\Users\\bbyers\\My Drive\\Research Papers\\WP2 - BCT\\Conference - TPP\\Data Analysis")
+#setwd("/Users/brandonbyers/Documents/Important Stuff/ETH Zürich/Papers/TPP")
+
+```
+
+```{r packagesssss}
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(reshape2)
+library(scales)
+library(likert)
+library(forcats)
+library(GGally)
+library(vcd)
+library(corrplot)
+library(wordcloud)
+library(tidytext)
+library(tm)
+library(tibble)
+library(RColorBrewer)
+library(topicmodels)
+```
+
+
+```{r Cleaning the Data}
+#Results-20231229.csv
+data_raw <- read.csv("Results-20240122.csv", header = TRUE)
+data <- data_raw[-2, ]
+
+# Adding Question row into header row
+first_row_values <- as.character(unlist(data[1, ]))
+current_col_names <- colnames(data)
+new_col_names <- paste(current_col_names, first_row_values, sep = "_")
+colnames(data) <- new_col_names
+data <- data[-1, ]
+
+
+# Adding a key column and anonymizing data
+data$key_column <- seq_len(nrow(data))
+data_anonymized <- subset(data, select = -c(1:20))
+data_anonymized$key_column <- data$key_column
+data_original_subset <- subset(data, select = c(1:20, key_column))
+
+write.csv(data_anonymized, "AnonymizedData.csv", row.names = FALSE)
+write.csv(data_original_subset, "OriginalSubsetData.csv", row.names = FALSE)
+
+data <- data_anonymized
+
+```
+
+
+```{r  Viz of Responders}
+# Q06: Importance of tracking construction and building products over time
+ggplot(data, aes(x = fct_infreq(data$Q06))) +
+  geom_bar(aes(fill = fct_infreq(data$Q06))) +
+  scale_fill_viridis_d() +
+  labs(title = "Importance of Tracking Construction and Building Products Over Time",
+       x = "Response", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Q07: Familiarity with the concept of circular economy
+ggplot(data, aes(x = fct_infreq(data$Q07))) +
+  geom_bar(aes(fill = fct_infreq(data$Q07))) +
+  scale_fill_viridis_d() +
+  labs(title = "Familiarity with the Concept of Circular Economy",
+       x = "Response", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Assuming Q04 is the third Likert scale question
+ggplot(data, aes(x = fct_infreq(data$Q04))) +
+  geom_bar(aes(fill = fct_infreq(data$Q04))) +
+  scale_fill_viridis_d() +
+  labs(title = "How Many Years of Experience", x = "Response", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Life cycle stage 
+ggplot(data %>%
+         select(Q08 = 7) %>%
+         filter(!is.na(Q08)) %>%
+         # Temporarily replace commas within "B1-B3: Use, Maintenance, Repair" with another character
+         mutate(Q08 = gsub("B1-B3: Use, Maintenance, Repair",                     "B1-B3: Use; Maintenance; Repair", Q08)) %>%
+         # Separate the responses at commas
+         separate_rows(Q08, sep = ",") %>%
+         # Revert the temporary replacement back to commas
+         mutate(Q08 = gsub("B1-B3: Use; Maintenance; Repair",                            "B1-B3: Use, Maintenance, Repair", Q08)) %>%
+         group_by(Q08) %>%
+         summarise(n = n()) %>%
+         mutate(Q08 = fct_reorder(Q08, n)), aes(x = Q08, y = n, fill = Q08)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_d() +
+  labs(title = "Most Beneficial Product Lifecycle Stage for Implementation",
+       x = "Lifecycle Stage", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  # Apply scale_x_discrete with wrapped labels because coord_flip swaps the axes
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 30)) # Adjust the width as necessary
+
+```
+
+
+```{r Intro questions with percentages}
+plot_with_percentages <- function(data, col_index, title) {
+  data %>%
+    mutate(Response = factor(.[[col_index]], levels = unique(.[[col_index]]))) %>%
+    group_by(Response) %>%
+    summarise(Count = n(), .groups = 'drop') %>%
+    mutate(Percentage = prop.table(Count) * 100) %>%
+    # Sort the data by Count in descending order
+    arrange(desc(Count)) %>%
+    # Update factor levels to reflect the new order
+    mutate(Response = factor(Response, levels = unique(Response))) %>%
+    ggplot(aes(x = Response, y = Count, fill = Response)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = paste0(round(Percentage, 1), "%")), vjust = -0.5) +
+    scale_fill_viridis_d() +
+    labs(title = title, x = "Response", y = "Count") +
+    theme_minimal() +
+    theme(legend.position = "none")
+    # Removed coord_flip() for vertical bars
+}
+
+# Apply the function to plot for Q06, Q07, and Q04 using the column index
+plot1 <- plot_with_percentages(data, 5, "Importance of Tracking Construction and Building Products Over Time")
+plot2 <- plot_with_percentages(data, 6, "Familiarity with the Concept of Product Passports")
+plot3 <- plot_with_percentages(data, 4, "How Many Years of Experience")
+
+# Print plots (or save them)
+plot1
+plot2
+plot3
+```
+
+
+
+```{r clean country data}
+# Named vector for country name mapping
+country_name_mapping <- c("ch" = "Switzerland", "switzerland" = "Switzerland", "uk" = "United Kingdom", "united kingdom" = "United Kingdom", "us" = "United States", "usa" = "United States", "united states" = "United States", "austria" = "Austria", "d-a-ch region (focus in austria)" = "Austria", "d-a-ch" = "Switzerland", "dach" = "Germany", "the netherlands" = "Netherlands", "netherlands" = "Netherlands", "germany" = "Germany", "denmark" = "Denmark", "uae" = "United Arab Emirates", "sweden" = "Sweden", "singapore and australia" = "Singapore and Australia", "middle east" = "Middle East", "finland" = "Finland", "global" = "Global")
+
+# Clean and summarize country data
+clean_country_data <- data %>%
+  select(countries = 3) %>%  # Replace '3' with the actual column name or index
+  na.omit() %>%
+  separate_rows(countries, sep = ",") %>%
+  mutate(countries = if_else(tolower(str_trim(countries)) %in% names(country_name_mapping), 
+                             country_name_mapping[tolower(str_trim(countries))], 
+                             tolower(str_trim(countries)))) %>%
+  count(countries) %>%
+  mutate(percentage = n / sum(n) * 100) %>%
+  arrange(desc(n))
+
+# Bar plot with percentage labels
+ggplot(clean_country_data, aes(x = reorder(countries, n), y = n, fill = countries)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = sprintf("%.1f%%", percentage)), hjust = -0.1) +
+  scale_fill_viridis_d() +
+  coord_flip() +
+  labs(title = "Frequency of Standardized Countries", x = "Country", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+
+
+```{r}
+ggplot(data %>%
+         select(Q08 = 7) %>%
+         filter(!is.na(Q08)) %>%
+         # Temporarily replace commas within "B1-B3: Use, Maintenance, Repair" with another character
+         mutate(Q08 = gsub("B1-B3: Use, Maintenance, Repair", 
+                           "B1-B3: Use; Maintenance; Repair", Q08)) %>%
+         # Separate the responses at commas
+         separate_rows(Q08, sep = ",") %>%
+         # Revert the temporary replacement back to commas
+         mutate(Q08 = gsub("B1-B3: Use; Maintenance; Repair", 
+                           "B1-B3: Use, Maintenance, Repair", Q08)) %>%
+         group_by(Q08) %>%
+         summarise(n = n()) %>%
+         mutate(percentage = n / sum(n) * 100, 
+                Q08 = fct_reorder(Q08, n)), 
+      aes(x = Q08, y = n, fill = Q08)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = sprintf("%.1f%%", percentage)), position = position_dodge(width = 0.9), hjust = -0.1) +
+  coord_flip() +
+  scale_fill_viridis_d() +
+  labs(title = "Most Beneficial Product Lifecycle Stage for Implementation",
+       x = "Lifecycle Stage", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  # Apply scale_x_discrete with wrapped labels because coord_flip swaps the axes
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 30)) # Adjust the width as necessary
+
+```
+
+
+```{r}
+# Convert all mapping keys to lowercase
+institution_type_mapping <- c(
+  "university" = "Academic", "university " = "Academic", "eth zurich" = "Academic",  "tampere university" = "Academic",  "technical university" = "Academic",  "tu vienna/ madaster" = "Academic",  "academic institution" = "Academic",
+  "startup" = "Startup",  "concular" = "Startup", "software as a service for construction" = "Startup", "saas collaboration platform for construction and real estate industry" = "Startup",
+  "real estate consulting" = "Consulting/Finance", "professional services firm" = "Consulting/Finance", "financial" = "Consulting/Finance", "consultancy business" = "Consulting/Finance", "renewable energy technical consulting" = "Consulting/Finance",
+  "rail way constrcution" = "AEC Firm",
+  "it" = "Information Technology",
+  "hochbauamt kanton zürich" = "Government",
+  "engineering consulting" = "AEC Firm",
+  "engineering / design consulting firm" = "AEC Firm",
+  "city authorities of zürich" = "Government",
+  "bim-data automatic qa und bim management" = "AEC Firm",
+  "architecture firm" = "AEC Firm",
+  "dalux; cloud collaboration platform; cde for construction and real estate industry" = "Information Technology"
+  # Add more mappings as needed
+)
+
+# Ensure all keys are lowercase to match against lowercase data
+names(institution_type_mapping) <- tolower(names(institution_type_mapping))
+
+# Standardize the institution types
+# First convert the institution types in the data to lowercase
+data$institution_type <- tolower(data[[2]])
+
+# Now apply the mapping to standardize institution types
+# Use `match` to handle missing values properly
+matched <- match(data$institution_type, names(institution_type_mapping))
+data$standardized_institution_type <- ifelse(is.na(matched), data$institution_type, institution_type_mapping[matched])
+
+# Count the frequency of each unique standardized institution type
+standardized_institution_counts <- data %>%
+  count(standardized_institution_type) %>%
+  arrange(desc(n))
+
+# Create a bar plot
+ggplot(standardized_institution_counts, aes(x = reorder(standardized_institution_type, n), y = n, fill = standardized_institution_type)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +  # Flip for horizontal bars
+  labs(title = "Frequency of Standardized Institution Types",
+       x = "Institution Type", y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+
+
+```{r Use Cases and Hardware Results}
+# Function to prepare multiple choice data
+prepare_mc_data <- function(column_data) {
+  choices <- strsplit(as.character(column_data), ",")
+  choice_list <- unlist(choices)
+  choice_table <- table(factor(choice_list, levels = unique(choice_list)))
+  return(as.data.frame(choice_table))
+}
+
+# Prepare data for Columns 9, 11, and 14
+col9_data <- prepare_mc_data(data[, 9])
+col11_data <- prepare_mc_data(data[, 11])
+col14_data <- prepare_mc_data(data[, 14])
+col7_data <- prepare_mc_data(data[, 7])
+
+# Renaming columns for ggplot
+colnames(col9_data) <- c("Choice", "Frequency")
+colnames(col11_data) <- c("Choice", "Frequency")
+colnames(col14_data) <- c("Choice", "Frequency")
+colnames(col7_data) <- c("Choice", "Frequency")
+
+# Reorder choices based on frequency
+col9_data$Choice <- fct_reorder(col9_data$Choice, col9_data$Frequency)
+col11_data$Choice <- fct_reorder(col11_data$Choice, col11_data$Frequency)
+col14_data$Choice <- fct_reorder(col14_data$Choice, col14_data$Frequency)
+col7_data$Choice <- fct_reorder(col7_data$Choice, col7_data$Frequency)
+
+# Function to create a bar plot for multiple choice data
+plot_mc_data <- function(mc_data, title) {
+  # Find the maximum frequency to set the breaks up to this value
+  max_freq <- max(mc_data$Frequency)
+  
+  ggplot(mc_data, aes(x = Choice, y = Frequency, fill = Choice)) +
+    geom_bar(stat = "identity") +
+    coord_flip() + # Flip coordinates for horizontal bars
+    #scale_fill_viridis_d(option = "C") +      #color palettes: https://ggplot2-book.org/scales-colour
+    scale_fill_brewer(palette = "BrBG") +
+    #scale_y_continuous(breaks = seq(0, max_freq, by = 1)) + # Set breaks every 1 count
+    #scale_x_discrete() +
+    labs(#title = title, 
+         x = "Choices", y = "Frequency") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 0, hjust = 1),
+          legend.position = "none")
+}
+
+# Plot for Column 9
+plot_mc_data(col9_data, colnames(data)[9])
+# Plot for Column 11
+#plot_mc_data(col11_data, colnames(data)[11])
+# Plot for Column 14
+#plot_mc_data(col14_data, colnames(data)[14])
+# Plot for Column 7
+#plot_mc_data(col7_data, colnames(data)[7])
+```
+
+
+```{r}
+library(ggplot2)
+library(forcats)
+library(stringr)
+library(RColorBrewer)
+
+# Modified function to prepare multiple choice data
+prepare_mc_data <- function(column_data) {
+  choices <- strsplit(as.character(column_data), ",")
+  choice_list <- unlist(choices)
+  choice_table <- table(factor(choice_list, levels = unique(choice_list)))
+  df <- as.data.frame(choice_table)
+  
+  # Calculate the percentage
+  df$Percentage <- df$Freq / sum(df$Freq) * 100
+  
+  # Return the dataframe with a percentage column
+  return(df)
+}
+
+# Function to create a bar plot for multiple choice data with wrapped axis text
+plot_mc_data <- function(mc_data, title, wrap_width = 25) {
+  # Wrap the text for axis labels
+  mc_data$Var1 <- str_wrap(mc_data$Var1, width = wrap_width)
+
+  # Define the colors from the "BrBG" palette
+  num_colors <- length(mc_data$Freq)
+  colors <- colorRampPalette(brewer.pal(11, "BrBG"))(num_colors)
+  
+  ggplot(mc_data, aes(x = fct_reorder(Var1, Freq), y = Freq, fill = Freq)) +
+    geom_bar(stat = "identity") +
+    #geom_text(aes(label = sprintf("%.1f%%", Percentage)), position = position_dodge(width = 0.9), hjust = -0.1) +
+    coord_flip() + # Flip coordinates for horizontal bars
+    scale_fill_gradientn(colors = colors, space = "Lab", limits = c(0, max(mc_data$Freq)), guide = "none") +
+    labs(#title = title, 
+         x = "Choices", y = "Frequency") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(hjust = 1),
+          axis.text.y = element_text(),
+          legend.position = "none")
+}
+
+# Example usage (assuming 'data' is a pre-existing dataframe)
+# Prepare data for Column 9
+col9_data <- prepare_mc_data(data[, 9])
+
+# Plot for Column 9
+plot_mc_data(col9_data, colnames(data)[9])
+
+
+```
+
+
+
+```{r PP Requirements Likert}
+# Select the Likert scale items (columns 17 to 23)
+likert_items <- data[, 17:23]
+
+# Convert all columns to factors ensuring the levels are in the correct order
+likert_levels <- c("Not at all important", "Slightly important", "Moderately important", 
+                   "Very important", "Extremely important")
+likert_items[] <- lapply(likert_items, factor, levels = likert_levels)
+
+# Create a likert object from the items
+likert_data <- likert(likert_items)
+
+# Plot the data
+par(mar=c(5, 8, 4, 2) + 0.1) 
+
+likert_plot <- likert::likert.bar.plot(likert_data)
+par(mar=c(5, 8, 4, 4) + 0.1) 
+plot(likert_plot)
+```
+
+
+```{r Likert Mapping}
+# Define a mapping from Likert scale responses to numerical values
+likert_map <- c(
+  "Definitely yes" = 5, "Probably yes" = 4, "Might or might not" = 3, "Probably not" = 2, "Definitely not" = 1,
+  
+  "Extremely useful" = 5, "Very useful" = 4, "Moderately useful" = 3, "Slightly useful" = 2, "Not at all useful" = 1,
+  
+  "Extremely familiar" = 5, "Very familiar" = 4, "Moderately familiar" = 3, "Slightly familiar" = 2, "Not familiar at all" = 1,
+  
+  "Extremely important" = 5, "Very important" = 4, "Moderately important" = 3, "Slightly important" = 2, "Not at all important" = 1
+)
+
+# Convert the Likert scale responses to numerical values
+data_numerical <- data %>%
+  mutate(across(c(`Q06_In your field, how important is it to track construction and building products over time?`,
+                  `Q07_How familiar are you with product passports?`,
+                  `Q26_How familiar are you with tokenization?`,
+                  `Q27_Do you see tokenization as having potential applications for Circular Construction / Circular Supply Chain Management?`,
+                  `Q29_How useful would tokenizing product passports be?`,
+                  `Q24_Do you see blockchain as having potential applications for Circular Construction / Circular Supply Chain Management?`,
+                  `Q23_How familiar are you with Blockchain Technologies?`),
+                ~as.integer(likert_map[.])))
+
+# Rename the columns in data_numerical
+names(data_numerical)[names(data_numerical) == "Q06_In your field, how important is it to track construction and building products over time?"] <- "Product Tracking Importance"
+names(data_numerical)[names(data_numerical) == "Q07_How familiar are you with product passports?"] <- "Product Passport Familiarity"
+names(data_numerical)[names(data_numerical) == "Q26_How familiar are you with tokenization?"] <- "Tokenization Familiarity"
+names(data_numerical)[names(data_numerical) == "Q27_Do you see tokenization as having potential applications for Circular Construction / Circular Supply Chain Management?"] <- "Tokenization Applicability"
+names(data_numerical)[names(data_numerical) == "Q29_How useful would tokenizing product passports be?"] <- "Tokenizing Product Passports"
+names(data_numerical)[names(data_numerical) == "Q24_Do you see blockchain as having potential applications for Circular Construction / Circular Supply Chain Management?"] <- "Blockchain Applicability"
+names(data_numerical)[names(data_numerical) == "Q23_How familiar are you with Blockchain Technologies?"] <- "Blockchain Familiarity"
+
+```
+
+
+```{r Likert BCT & TPP Correlations}
+# Calculate the correlation matrix for the numerical Likert scale items
+correlation_matrix1 <- cor(data_numerical[, c(5,6,26,27,29,30,32)], 
+                          use = "pairwise.complete.obs") #also "all.obs" and "complete.obs" and "pairwise.complete.obs"
+correlation_matrix2 <- cor(data_numerical[, c(26,27,29,30,32)], 
+                          use = "pairwise.complete.obs")
+correlation_matrix3 <- cor(data_numerical[, c(5,6,32)], 
+                          use = "pairwise.complete.obs")
+
+par(family = "serif")
+
+
+# Use corrplot to visualize the correlation matrix
+corrplot::corrplot(correlation_matrix1, method = "shade",
+                   tl.col = "black", tl.srt = 0.1, tl.cex = 0.9, tl.offset = 1.1, 
+                   addgrid.col = "grey", # Add grid lines
+                   type = "lower",
+                   )
+
+corrplot::corrplot(correlation_matrix2, method = "shade", 
+                   tl.col = "black", tl.srt = 0.1, tl.cex = 0.9, tl.offset = 1.1, 
+                   #title = "Correlation Matrix of Survey Responses",
+                   addgrid.col = "grey",
+                   type = "lower",
+                   )
+
+corrplot::corrplot(correlation_matrix3, method = "shade", 
+                   tl.col = "black", tl.srt = 0.1, tl.cex = 1, tl.offset = 1.1, 
+                   #title = "Correlation Matrix of Survey Responses", 
+                   addgrid.col = "grey",
+                   type = "lower",
+                   )
+```
+
+
+```{r}
+library(corrplot)
+library(RColorBrewer)
+
+# Assuming 'correlation_matrix1', 'correlation_matrix2', and 'correlation_matrix3' are your correlation matrices
+par(family = "serif")
+
+# Correlation plot for correlation_matrix1
+corrplot(correlation_matrix1, method = "shade", 
+         tl.col = "black", tl.srt = 0.01, tl.cex = 0.9, tl.offset = 0.6, 
+         addgrid.col = "grey", 
+         type = "lower",
+         col = brewer.pal(n = 11, name = "BrBG"),
+         addCoef.col = "black") # Add correlation coefficients in black
+
+
+
+```
+
+
+
+```{r Alternative Plot for BCT familiarity Data... idk if it works}
+library(dplyr)
+library(likert)
+library(ggplot2)
+
+# Assuming 'data' is already loaded and contains the Likert scale responses
+
+# Convert the Likert scale responses to factors with ordered levels
+data <- data %>%
+  mutate(across(c(`Q06_In your field, how important is it to track construction and building products over time?`,
+                  `Q07_How familiar are you with product passports?`,
+                  `Q26_How familiar are you with tokenization?`,
+                  `Q27_Do you see tokenization as having potential applications for Circular Construction / Circular Supply Chain Management?`,
+                  `Q29_How useful would tokenizing product passports be?`,
+                  `Q24_Do you see blockchain as having potential applications for Circular Construction / Circular Supply Chain Management?`,
+                  `Q23_How familiar are you with Blockchain Technologies?`),
+                ~factor(., levels = c("Definitely not", "Probably not", "Might or might not", "Probably yes", "Definitely yes"), ordered = TRUE)))
+
+# Apply the likert function
+#likert_data <- likert(data)
+
+# Prepare the plot with likert.bar.plot
+#likert_plot <- likert::likert.bar.plot(likert_data)
+
+# Print the plot
+#print(likert_plot)
+
+```
+
+
+
+```{r Wordcloud for problems/challenges inhibiting adoption of PP for AEC}
+# Create a tibble for text analysis
+text_data <- tibble(text = na.omit(data[[13]]))
+
+# Tokenize the text into words and remove stop words
+word_frequencies <- text_data %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word") %>%
+  count(word, sort = TRUE)
+
+# Create the word cloud
+wordcloud(words = word_frequencies$word, freq = word_frequencies$n,
+          min.freq = 1,  # Set minimum frequency as needed
+          max.words = 25,  # You can adjust the number of words shown
+          random.order = FALSE,
+          colors = brewer.pal(6, "Dark2"))
+
+# Create a tibble for text analysis
+text_data2 <- tibble(text = na.omit(data[[28]]))
+
+# Tokenize the text into words and remove stop words
+word_frequencies2 <- text_data2 %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word") %>%
+  count(word, sort = TRUE)
+
+# Create the word cloud
+wordcloud(words = word_frequencies2$word, freq = word_frequencies2$n,
+          min.freq = 1,  # Set minimum frequency as needed
+          max.words = 20,  # You can adjust the number of words shown
+          random.order = FALSE,
+          colors = brewer.pal(6, "Dark2"))
+```
+
+```{r Latent Dirichlet allocation (LDA) is a method for fitting a topic model}
+# Pre-process the text, Ensure that the column name is referenced correctly
+text_data <- data %>%
+  select(text_column = 13) %>%  # Select the 13th column and temporarily name it 'text_column'
+  na.omit() %>%
+  mutate(id = row_number(), text = as.character(text_column)) %>%
+  select(-text_column)  # Remove the temporary column to avoid conflicts
+
+# Tokenization and removal of stop words
+docs <- text_data %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word") %>%
+  count(id, word) %>%
+  ungroup()
+
+# Create a Document-Term Matrix
+dtm <- docs %>%
+  cast_dtm(id, word, n)
+
+k = 4
+# Fit the LDA model on the DTM, k = 9 seems good for number of topics
+lda_model <- LDA(dtm, k, control = list(seed = 123))
+
+topic_terms <- terms(lda_model, 6)     # Examine the terms associated with each topic
+topics <- tidy(lda_model, matrix = "gamma")    # Get the topic distribution across documents
+
+print(topic_terms)
+
+# Convert the topics data frame into a wider format suitable for ggplot
+topics_wide <- topics %>%
+  group_by(document) %>%
+  mutate(max_gamma = max(gamma)) %>%
+  ungroup() %>%
+  filter(gamma == max_gamma) %>%
+  count(topic)
+
+#ggplot(topics_wide, aes(x = factor(topic), y = n, fill = factor(topic))) +
+#  geom_bar(stat = "identity") +
+#  scale_fill_brewer(palette = "BrBG") +
+#  labs(title = "Topic Distribution Across Documents", x = "Topic", y = "Number of Responses") +
+#  theme_minimal() +
+#  theme(legend.position = "none")
+```
+
+```{r Topic Modeling: Challenges inhibiting PP Adoption}
+# Extract top words for each topic (assuming top_terms is correctly structured)
+top_terms <- terms(lda_model, 6)
+topic_labels <- apply(top_terms, 2, function(words) paste(words, collapse = ", "))
+
+# Generate topic labels
+if (length(topic_labels) != k) {
+  stop("Number of topic labels does not match the number of topics (k)")}
+
+# Create a data frame of topic labels
+topic_labels_df <- data.frame(topic = seq_len(k), label = topic_labels)
+
+# Prepare the topics data for ggplot
+topics_plot_data <- topics %>%
+  group_by(document) %>%
+  mutate(max_gamma = max(gamma)) %>%
+  ungroup() %>%
+  filter(gamma == max_gamma) %>%
+  count(topic) %>%
+  left_join(topic_labels_df, by = "topic")
+
+# Order topics based on the count 'n'
+topics_plot_data <- topics_plot_data %>%
+  mutate(topic = reorder(factor(topic), n))
+
+# Create the plot
+ggplot(topics_plot_data, aes(x = reorder(label, n), y = n, fill = topic)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_brewer(palette = "BrBG", direction = 1) +  # Reverse the color scale
+  labs(x = "Topic (Top Words)", 
+       #title = "Challenges for Adoption of Product Passports", 
+       y = "Number of Responses",) +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 0, hjust = 1)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 30))  # Wrap labels
+```
+
+
+```{r  current challenges with existing database systems for product tracking}
+# Preprocess the text in column 16
+text_data_col16 <- data %>%
+  select(text_column = 16) %>%  # Replace '16' with the actual column index or name
+  na.omit() %>%
+  mutate(id = row_number(), text = as.character(text_column)) %>%
+  select(-text_column)  # Remove the temporary column to avoid conflicts
+
+# Tokenization and removal of stop words
+docs_col16 <- text_data_col16 %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word") %>%
+  count(id, word) %>%
+  ungroup()
+
+# Create a Document-Term Matrix
+dtm_col16 <- docs_col16 %>%
+  cast_dtm(id, word, n)
+
+# Set the number of topics
+k_col16 <- 4
+
+# Fit the LDA model on the DTM
+lda_model_col16 <- LDA(dtm_col16, k = k_col16, control = list(seed = 1234))
+
+# Examine the terms associated with each topic
+top_terms_col16 <- terms(lda_model_col16, 7)
+
+# Generate topic labels
+topic_labels_col16 <- apply(top_terms_col16, 2, function(words) paste(words, collapse = ", "))
+
+# Prepare the topics data for ggplot
+topics_plot_data_col16 <- tidy(lda_model_col16, matrix = "gamma") %>%
+  group_by(document) %>%
+  mutate(max_gamma = max(gamma)) %>%
+  ungroup() %>%
+  filter(gamma == max_gamma) %>%
+  count(topic) %>%
+  left_join(data.frame(topic = seq_len(k_col16), label = topic_labels_col16), by = "topic")
+
+# Create the plot
+ggplot(topics_plot_data_col16, aes(x = reorder(label, n), y = n, fill = factor(topic))) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  #scale_fill_viridis_d() +
+  scale_fill_brewer(palette = "BrBG") +
+  labs(title = "Challenges with existing database systems",
+       x = "Topic (Top Words)",
+       y = "Number of Responses") +
+  theme_minimal() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(angle = 0, hjust = 1)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 30))  # Wrap labels
+```
+
+
+```{r Topic Modeling: How Might Blockchain be Used}
+# Preprocess the text in column 16
+text_data_col28 <- data %>%
+  select(text_column = 28) %>%  # Replace '16' with the actual column index or name
+  na.omit() %>%
+  mutate(id = row_number(), text = as.character(text_column)) %>%
+  select(-text_column)  # Remove the temporary column to avoid conflicts
+
+# Tokenization and removal of stop words
+docs_col28 <- text_data_col28 %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word") %>%
+  count(id, word) %>%
+  ungroup()
+
+# Create a Document-Term Matrix
+dtm_col28 <- docs_col28 %>%
+  cast_dtm(id, word, n)
+
+# Set the number of topics
+k_col28 <- 4
+
+# Fit the LDA model on the DTM
+lda_model_col28 <- LDA(dtm_col28, k = k_col28, control = list(seed = 1234))
+
+# Examine the terms associated with each topic
+top_terms_col28 <- terms(lda_model_col28, 7)
+
+# Generate topic labels
+topic_labels_col28 <- apply(top_terms_col28, 2, function(words) paste(words, collapse = ", "))
+
+# Prepare the topics data for ggplot
+topics_plot_data_col28 <- tidy(lda_model_col28, matrix = "gamma") %>%
+  group_by(document) %>%
+  mutate(max_gamma = max(gamma)) %>%
+  ungroup() %>%
+  filter(gamma == max_gamma) %>%
+  count(topic) %>%
+  left_join(data.frame(topic = seq_len(k_col28), label = topic_labels_col28), by = "topic")
+
+# Create the plot
+ggplot(topics_plot_data_col28, aes(x = reorder(label, n), y = n, fill = factor(topic))) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_brewer(palette = "BrBG") +
+  #scale_fill_viridis_d() +
+  labs(title = "How Might Blockchain be Used",
+       x = "Topic (Top Words)",
+       y = "Number of Responses") +
+  theme_minimal() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(hjust = 1)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 30))  # Wrap labels
+```
+
+
+```{r Topic Modeling: How Might Tokenization be Used}
+# Preprocess the text in column 16
+text_data_col31 <- data %>%
+  select(text_column = 31) %>%  # Replace '16' with the actual column index or name
+  na.omit() %>%
+  mutate(id = row_number(), text = as.character(text_column)) %>%
+  select(-text_column)  # Remove the temporary column to avoid conflicts
+
+# Tokenization and removal of stop words
+docs_col31 <- text_data_col31 %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word") %>%
+  count(id, word) %>%
+  ungroup()
+
+# Create a Document-Term Matrix
+dtm_col31 <- docs_col31 %>%
+  cast_dtm(id, word, n)
+
+# Set the number of topics... 3 looks good (with 5/6 words)
+k_col31 <- 3
+
+# Fit the LDA model on the DTM
+lda_model_col31 <- LDA(dtm_col31, k = k_col31, control = list(seed = 1234))
+
+# Examine the terms associated with each topic
+top_terms_col31 <- terms(lda_model_col31, 5)
+
+# Generate topic labels
+topic_labels_col31 <- apply(top_terms_col31, 2, function(words) paste(words, collapse = ", "))
+
+# Prepare the topics data for ggplot
+topics_plot_data_col31 <- tidy(lda_model_col31, matrix = "gamma") %>%
+  group_by(document) %>%
+  mutate(max_gamma = max(gamma)) %>%
+  ungroup() %>%
+  filter(gamma == max_gamma) %>%
+  count(topic) %>%
+  left_join(data.frame(topic = seq_len(k_col31), label = topic_labels_col31), by = "topic")
+
+custom_colors <- c("#a6611a", 
+                   "#dfc27d", "#80cdc1", "#018571")
+
+# Create the plot
+ggplot(topics_plot_data_col31, aes(x = reorder(label, n), y = n, fill = factor(topic))) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = custom_colors) + # Use custom colors
+  labs(#title = "How Might Tokenization be Used",
+       x = "Topic (Top Words)", y = "Number of Responses") +
+  theme_minimal() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(angle = 0, hjust = 1)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 25))  # Wrap labels
+```
+
+
+
